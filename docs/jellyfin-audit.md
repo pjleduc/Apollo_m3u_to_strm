@@ -87,6 +87,28 @@ Not script defects, but operational traps the upstream README never mentions:
   as new items, so watch state resets once. Do the migration before first
   real deployment, or accept the one-time reset.
 
+## 9. Round-3 findings (2026-07-15)
+
+- **Malformed URLs wedge the scan**: a bad hostname inside a .strm stalls the
+  whole library scan at ~95% with "Invalid URI" (jellyfin#16287). Fixed: the
+  script now validates every stream URL (http/https + parseable hostname)
+  before writing, on top of m3u-parser's own scheme filter.
+- **Uncategorized lumping**: entries with no group-title all landed in one
+  fake "Uncategorized" show, merging unrelated series. Fixed: the show name
+  is derived from the episode-name prefix before SxxEyy; "Uncategorized" is
+  the last resort only.
+- **Jellyfin 12.0 (RC, mid-2026)**: performance/DB/API-cleanup release on the
+  10.11 backend rewrite; no .strm handling changes found. First boot after
+  upgrade runs long database migrations on large libraries — expected, not a
+  script concern.
+- **Residual notes, no action possible in this script**: Apollo feeds carry
+  no tmdb/imdb ids, so `[tmdbid-...]` folder tags can't be derived (revisit
+  if tvg-id ever gets populated); external subtitles added next to .strm
+  files can be deleted by the probe-vs-scanner conflict (jellyfin#15882);
+  Windows/SMB legacy 260-char path limits could bite deep season paths if
+  the library is ever served to Windows (irrelevant on APFS/ext4); a sports
+  VOD section is a two-line addition to the `sections` list in main().
+
 ## Status in this fork
 
 Items 2–5 were fixed on `main` in the 2026-07-15 rewrite (playlist-driven

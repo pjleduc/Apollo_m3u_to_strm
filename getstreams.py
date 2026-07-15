@@ -119,20 +119,38 @@ def fetch_playlist(url, workdir):
     return streams
 
 
+def valid_stream_url(url):
+    """A malformed URL inside a .strm can wedge Jellyfin's whole library scan
+    (jellyfin#16287), so never write anything that isn't plain http(s)."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
 def strm_path(dest, item, movie_layout):
     """Target .strm path for a stream dict, or None if it can't be built."""
     name = item.get("name")
     url = item.get("url")
-    if not name or not url:
+    if not name or not url or not valid_stream_url(url):
         return None
     name = sanitize_filename(collapse_duplicate_years(name))
     if not name:
         return None
     if movie_layout:
         return dest / name / f"{name}.strm"
-    category = item.get("category") or "Uncategorized"
-    category = sanitize_filename(collapse_duplicate_years(category)) or "Uncategorized"
+    category = item.get("category") or ""
+    if category:
+        category = sanitize_filename(collapse_duplicate_years(category))
     season = season_folder(name)
+    if not category:
+        # no group-title: derive the show from the episode-name prefix rather
+        # than lumping every uncategorized entry into one fake show
+        match = EPISODE_RE.search(name)
+        category = name[: match.start()].strip(" -–") if match else ""
+    if not category:
+        category = "Uncategorized"
     if season:
         return dest / category / season / f"{name}.strm"
     return dest / category / f"{name}.strm"
@@ -147,7 +165,7 @@ def sync_section(label, url_file, dest, movie_layout, allow_delete):
 
     complete = True
     expected = {}  # resolved Path -> stream url
-    written = skipped = collisions = versions = 0
+    written = skipped = collisions = versions = unusable = 0
 
     for url in urls:
         streams = fetch_playlist(url, dest)
@@ -158,6 +176,7 @@ def sync_section(label, url_file, dest, movie_layout, allow_delete):
         for item in streams:
             target = strm_path(dest, item, movie_layout)
             if target is None:
+                unusable += 1
                 continue
             target = target.resolve()
             if target not in expected:
@@ -190,6 +209,8 @@ def sync_section(label, url_file, dest, movie_layout, allow_delete):
         target.write_text(stream_url)
         written += 1
 
+    if unusable:
+        log.warning("%s: %d entries skipped (missing name or invalid URL)", label, unusable)
     if versions:
         log.info("%s: %d alternate versions written", label, versions)
     if collisions:
