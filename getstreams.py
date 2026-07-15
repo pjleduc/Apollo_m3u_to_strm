@@ -1,205 +1,215 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
+"""Convert Apollo Group TV M3U VOD playlists into .strm files for a media server.
+
+Reads playlist URLs from tv_vod_urls.txt and movie_vod_urls.txt (one per line,
+lines starting with # ignored) and mirrors their contents into TV/ and Movies/
+as .strm files:
+
+    TV/<category>/<name>.strm
+    Movies/<name>/<name>.strm
+
+Sync behavior:
+  - .strm files are only rewritten when their stream URL changed.
+  - .strm files no longer present in the playlists are deleted, but only if
+    every playlist for that section was fetched and parsed successfully.
+    A playlist that is unreachable or empty disables deletion for the whole
+    section, so a provider outage never wipes the library.
+  - Only .strm files are ever deleted; NFO files, artwork and any other
+    media-server metadata are left alone. Empty directories are pruned.
+"""
+
+import argparse
+import logging
+import re
+import sys
+import tempfile
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import requests
 from m3u_parser import M3uParser
 from pathvalidate import sanitize_filename
-import os
-import stat
-import json 
-import requests
-import numpy
-import shutil
-import re
-import time
 
-def remove_duplicate_year(s):
-	arr = s.split(" ")
-	for i in range(len(arr)-1):
-		if re.match(r"\(\d{4}\)", arr[i]) and re.match(r"\(\d{4}\)", arr[i+1]) and arr[i] == arr[i+1]:
-			arr.pop(i+1)
-			return " ".join(arr)
-	return s
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36"
+)
+CONNECT_TIMEOUT = 10
+READ_TIMEOUT = 120
 
-def url_checker(url):
-	try:
-		#Get Url
-		get = requests.get(url)
-		# if the request succeeds 
-		if get.status_code == 200:
-			#return(f"{url}: is reachable")
-			return True
-		else:
-			#return(f"{url}: is Not reachable, status_code: {get.status_code}")
-			return False
-	except requests.exceptions.RequestException as e:
-        # print URL with Errs
-		raise SystemExit(f"{url}: is Not reachable \nErr: {e}")
+log = logging.getLogger("getstreams")
 
 
-def is_empty_dir(dirname):
-    return not any(os.scandir(dirname))
+def redact(url):
+    """Strip credentials from a playlist URL so it is safe to log."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.hostname}/..."
 
 
-#----------------------------process tv stuff-------------------------------
-tv_vod_urls = []
-ok_tv_vod_urls = []
-tv_vod_subfolder = 'TV'
-time_threshold = time.time() - 48 * 3600  # 48 hours in seconds
-
-#check if TV VOD subfolder exists and handle it
-if not os.path.exists(tv_vod_subfolder):
-	print('folder does not exist')
-	quit()
-
-#check if TV VOD url file exists
-if not os.path.exists('tv_vod_urls.txt'):
-	print('file does not exist')
-	quit()
-
-#open TV VOD file and read lines 
-with open('tv_vod_urls.txt') as tv_vod_url_file:
-	tv_vod_urls = tv_vod_url_file.readlines()
-
-#strip return chars from read lines
-tv_vod_urls = numpy.char.strip(tv_vod_urls)
-
-#filter out URLS that don't return 200
-ok_tv_vod_urls[:] = filter(url_checker, tv_vod_urls)
-
-#set up parser
-parser = M3uParser(timeout=10, useragent='"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36"')
-
-#parse all URLs, convert to JSON and put them into a dictionary object
-stream_list = ''
-
-for url in ok_tv_vod_urls:
-	parser.parse_m3u(url)
-	json_string = parser.get_json()
-	if stream_list:
-		stream_list += json.loads(json_string)
-	else:
-		stream_list = json.loads(json_string)
-
-#change into tv subfolder 
-os.chdir(tv_vod_subfolder)
-
-#process the streams into strm files, using sanitize_filename to remove invalid characters from folder/file names
-for item in stream_list:
-	category = sanitize_filename(item.get('category'))
-	name = sanitize_filename(item.get('name'))
-	category = remove_duplicate_year(category)
-	name = remove_duplicate_year(name)
-	url = item.get('url')
-	if not os.path.exists(category):
-		os.makedirs(category)
-	file = open(category + '/' + name + '.strm', 'w+')
-	file.write(url)
-	file.close()
+def collapse_duplicate_years(name):
+    """'Show (2020) (2020)' -> 'Show (2020)'."""
+    return re.sub(r"(\(\d{4}\))(\s+\1)+", r"\1", name)
 
 
-#clean up files older than 48h and remove any empty folders (windows)
-#walk through all subdirectories and files within the current directory
-for root, dirs, files in os.walk(".", topdown=False):
-    for file in files:
-        # Get the full path of the file
-        filepath = os.path.join(root, file)
-
-        # Check if the file has not been modified in the last 48 hours
-        if os.path.getmtime(filepath) < time_threshold:
-            # Delete the file
-            os.remove(filepath)
-            print(f"Deleted {filepath}")
-
-    for dir in dirs:
-        # Get the full path of the directory
-        dirpath = os.path.join(root, dir)
-
-        # Check if the directory is empty
-        if is_empty_dir(dirpath):
-            # Delete the directory
-            os.rmdir(dirpath)
-            print(f"Deleted empty directory {dirpath}")
-
-#change back to script folder
-os.chdir('../')
-
-#-------------------------------process movie stuff----------------------------
-movie_vod_urls = []
-ok_movie_vod_urls = []
-movie_vod_subfolder = 'Movies'
-time_threshold = time.time() - 48 * 3600  # 48 hours in seconds
-
-#check if Movie VOD subfolder exists
-if not os.path.exists(movie_vod_subfolder):
-	print('folder does not exist')
-	quit()
-
-#check if Movie VOD url file exists
-if not os.path.exists('movie_vod_urls.txt'):
-	print('file does not exist')
-	quit()
-
-#open Movie VOD file and read lines
-with open('movie_vod_urls.txt') as movie_vod_url_file:
-	movie_vod_urls = movie_vod_url_file.readlines()
-
-#strip return chars from array items
-movie_vod_urls = numpy.char.strip(movie_vod_urls)
-
-#filter out URLS that don't return 200
-ok_movie_vod_urls[:] = filter(url_checker, movie_vod_urls)
-
-#set up parser
-parser = M3uParser(timeout=10, useragent='"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36"')
-
-#parse all URLs, convert to JSON and put them into a dictionary object
-stream_list = ''
-
-for url in ok_movie_vod_urls:
-	parser.parse_m3u(url)
-	json_string = parser.get_json()
-	if stream_list:
-		stream_list += json.loads(json_string)
-	else:
-		stream_list = json.loads(json_string)
-
-#change into tv subfolder 
-os.chdir(movie_vod_subfolder)
-
-#process the streams into strm files!
-for item in stream_list:
-	name = sanitize_filename(item.get('name'))
-	url = item.get('url')
+def read_url_file(path):
+    urls = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            urls.append(line)
+    return urls
 
 
-	if not os.path.exists(name):
-		os.makedirs(name)
+def fetch_playlist(url, workdir):
+    """Download a playlist to a temp file and parse it.
 
-	file = open(name + '/' + name+ '.strm', 'w+')
+    Returns a list of stream dicts, or None if the fetch/parse failed.
+    Downloading ourselves (instead of letting M3uParser fetch) gives us
+    explicit timeouts and status handling, and avoids fetching twice.
+    """
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+        )
+    except requests.exceptions.RequestException as exc:
+        log.warning("%s: fetch failed: %s", redact(url), type(exc).__name__)
+        return None
+    if response.status_code != 200:
+        log.warning("%s: HTTP %s", redact(url), response.status_code)
+        return None
 
-	file.write(url)
-	file.close()
+    with tempfile.NamedTemporaryFile(
+        mode="wb", suffix=".m3u", dir=workdir, delete=False
+    ) as tmp:
+        tmp.write(response.content)
+        tmp_path = Path(tmp.name)
+    try:
+        parser = M3uParser(timeout=CONNECT_TIMEOUT, useragent=USER_AGENT)
+        # check_live would issue a request per stream entry; never do that.
+        parser.parse_m3u(str(tmp_path), check_live=False)
+        streams = parser.get_list()
+    except Exception as exc:
+        log.warning("%s: parse failed: %s", redact(url), exc)
+        return None
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
-#clean up files older than 48h and remove any empty folders (windows)
-#walk through all subdirectories and files within the current directory
-for root, dirs, files in os.walk(".", topdown=False):
-    for file in files:
-        # Get the full path of the file
-        filepath = os.path.join(root, file)
+    if not streams:
+        log.warning("%s: playlist parsed but contained no streams", redact(url))
+        return None
+    return streams
 
-        # Check if the file has not been modified in the last 48 hours
-        if os.path.getmtime(filepath) < time_threshold:
-            # Delete the file
-            os.remove(filepath)
-            print(f"Deleted {filepath}")
 
-    for dir in dirs:
-        # Get the full path of the directory
-        dirpath = os.path.join(root, dir)
+def strm_path(dest, item, movie_layout):
+    """Target .strm path for a stream dict, or None if it can't be built."""
+    name = item.get("name")
+    url = item.get("url")
+    if not name or not url:
+        return None
+    name = sanitize_filename(collapse_duplicate_years(name))
+    if not name:
+        return None
+    if movie_layout:
+        return dest / name / f"{name}.strm"
+    category = item.get("category") or "Uncategorized"
+    category = sanitize_filename(collapse_duplicate_years(category)) or "Uncategorized"
+    return dest / category / f"{name}.strm"
 
-        # Check if the directory is empty
-        if is_empty_dir(dirpath):
-            # Delete the directory
-            os.rmdir(dirpath)
-            print(f"Deleted empty directory {dirpath}")
 
-#change back to script folder
-os.chdir('../')
+def sync_section(label, url_file, dest, movie_layout, allow_delete):
+    """Mirror the playlists in url_file into dest. Returns True on full success."""
+    urls = read_url_file(url_file)
+    if not urls:
+        log.error("%s: no URLs in %s", label, url_file.name)
+        return False
+
+    complete = True
+    expected = {}  # resolved Path -> stream url
+    written = skipped = collisions = 0
+
+    for url in urls:
+        streams = fetch_playlist(url, dest)
+        if streams is None:
+            complete = False
+            continue
+        log.info("%s: %s -> %d entries", label, redact(url), len(streams))
+        for item in streams:
+            target = strm_path(dest, item, movie_layout)
+            if target is None:
+                continue
+            target = target.resolve()
+            if target in expected:
+                if expected[target] != item["url"]:
+                    collisions += 1
+                continue  # first entry wins
+            expected[target] = item["url"]
+
+    for target, stream_url in expected.items():
+        if target.exists() and target.read_text() == stream_url:
+            skipped += 1
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(stream_url)
+        written += 1
+
+    if collisions:
+        log.warning("%s: %d name collisions (kept first occurrence)", label, collisions)
+    log.info("%s: %d written, %d unchanged", label, written, skipped)
+
+    if not (allow_delete and complete):
+        if allow_delete and not complete:
+            log.warning("%s: a playlist failed; skipping deletion pass", label)
+        return complete
+
+    deleted = 0
+    for strm in dest.rglob("*.strm"):
+        if strm.resolve() not in expected:
+            strm.unlink()
+            deleted += 1
+    for folder in sorted(dest.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if folder.is_dir() and not any(folder.iterdir()):
+            folder.rmdir()
+    log.info("%s: %d stale .strm deleted", label, deleted)
+    return True
+
+
+def main():
+    argp = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    argp.add_argument(
+        "--root",
+        type=Path,
+        default=Path(__file__).resolve().parent,
+        help="directory containing the url files and TV/Movies folders",
+    )
+    argp.add_argument(
+        "--no-delete",
+        action="store_true",
+        help="never delete stale .strm files, only write/update",
+    )
+    args = argp.parse_args()
+    logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
+
+    sections = [
+        ("TV", args.root / "tv_vod_urls.txt", args.root / "TV", False),
+        ("Movies", args.root / "movie_vod_urls.txt", args.root / "Movies", True),
+    ]
+
+    ok = True
+    for label, url_file, dest, movie_layout in sections:
+        if not url_file.is_file():
+            log.error("%s: %s not found", label, url_file)
+            ok = False
+            continue
+        if not dest.is_dir():
+            log.error("%s: folder %s not found", label, dest)
+            ok = False
+            continue
+        ok = sync_section(label, url_file, dest, movie_layout, not args.no_delete) and ok
+
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()

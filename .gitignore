@@ -1,0 +1,11 @@
+# credentials live inside these playlist URLs
+tv_vod_urls.txt
+movie_vod_urls.txt
+
+# generated library trees
+TV/
+Movies/
+
+.venv/
+tmp/
+__pycache__/

@@ -1,76 +1,66 @@
-I created this because I couldn't find any tools that would work with Apollo's M3U feeds. (apollogroup.tv)
-PR's welcome as there are probably things that could be done a little more sanely.
-(Especially error handling) 
+# Apollo M3U to STRM
 
-I'm using Jellyfin and wrote this script so that it can be placed in the root of my media folder.  I then use separate sub-folders 
-for strm file storage along side my media library.  This is why I have a subfolder variable declared and CD into it when generating
-the folder structure and strm files. 
+Converts Apollo Group TV (apollogroup.tv) M3U VOD playlists into `.strm` files
+for Jellyfin, Emby or Plex.
 
-I truncate and re-write URLs to the strm files that already exist so that their last modified times are updated. 
-The script then does a sweep to clean up any strm files that were not updated because they are no longer in the playlist, and any empty folders that are left behind as a result. 
+Fork of [bruor/Apollo_m3u_to_strm](https://github.com/bruor/Apollo_m3u_to_strm)
+with the sync logic reworked for safety and robustness:
 
-You'll need to modify the script to match your folder structure along with the commands that change directories before files are created.
-You'll also need to create/populate 2 text files that house your M3U URLs. There are currently 24 TV VOD URLs active, and 1 for movies.
-In the TV file I just added 30 URLs for future expansion since the script checks to see if they exist before consuming them. 
+- **Deletion is playlist-driven, not mtime-driven.** A `.strm` file is removed
+  only when every playlist in its section was fetched and parsed successfully
+  and the entry is genuinely gone. A provider outage, a 404 on one URL, or a
+  long gap between runs can no longer wipe your library.
+- **Only `.strm` files are ever deleted.** NFO files, artwork and other
+  media-server metadata in the library tree are left alone. Empty folders are
+  pruned.
+- **Unchanged files are not rewritten**, so file modification times stay stable
+  and your media server doesn't rescan 100k+ items every run.
+- Playlists are downloaded once (not twice) with proper timeouts; a dead URL is
+  logged and skipped instead of aborting the run.
+- Credentials embedded in playlist URLs are redacted from all log output.
+- Duplicate-year titles (`Show (2020) (2020)`) are collapsed, and name
+  collisions are detected and logged instead of silently overwriting.
+- No more `os.chdir` or hardcoded relative paths: run it from anywhere with
+  `--root`, exit code 1 on any failure (cron-friendly), `--no-delete` for a
+  write-only mode.
+- Dropped the numpy dependency.
 
-This does not scrape sports VOD content but it is easy enough to copy the movies section to create a sports one. 
-I only wanted items in my library that have full metadata. 
+## Setup
 
-I would recommend starting with Movies and 1 TV URL, get those added to your library and then add 1 URL per day to be processed. 
-As of writing this, their VOD library contains 12,025 movies and 2154 TV series totaling 115,721 episodes. 
+```
+pip install -r requirements.txt
+```
 
-#Caution, on my system this script seems to consume around 400MB of ram while running due to the size of the VOD library. 
+In your library root (or any folder passed as `--root`):
 
-You're going to need to install a few modules for the script to run.  Assuming you're on Ubuntu, install pip first, then:
+1. Create `TV` and `Movies` subfolders.
+2. Create `movie_vod_urls.txt`:
+   ```
+   https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/movies
+   ```
+3. Create `tv_vod_urls.txt` with one TV playlist URL per line
+   (`.../m3u8/tvshows/1` through `/30`). Lines starting with `#` are ignored,
+   so you can stage future URLs commented out.
 
-pip install m3u-parser
+Note: these files contain your Apollo credentials — keep them out of version
+control (this repo's `.gitignore` already excludes them) and off shared drives.
 
-pip install pathvalidate
+## Run
 
-pip install requests
+```
+python3 getstreams.py [--root /path/to/library] [--no-delete]
+```
 
-pip install numpy
+Output layout:
 
-Download getstreams.py to a folder where you're going to create your library of .strm files. 
+```
+TV/<show>/<episode>.strm
+Movies/<title>/<title>.strm
+```
 
-Create a subfolder named TV and another named Movies
+Start with the movies URL and one TV URL, let your media server finish
+scanning, then uncomment a few more TV URLs per run. Apollo's full VOD catalog
+is ~12k movies and ~115k episodes; the first full library scan takes hours.
 
-Create a file in the same folder as getstreams.py named movie_vod_urls.txt that contains the following line:
-https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/movies
-
-Create a file in the same folder as getstreams.py named tv_vod_urls.txt that contains the following lines: 
-https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/1
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/2
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/3
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/4
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/5
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/6
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/7
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/8
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/9
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/10
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/11
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/12
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/13
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/14
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/15
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/16
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/17
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/18
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/19
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/20
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/21
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/22
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/23
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/24
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/25
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/26
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/27
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/28
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/29
-#https://tvnow.best/api/list/YOUR_USERNAME/YOUR_PASSWORD/m3u8/tvshows/30
-
-Run the script by calling "python3 getstreams.py" 
-Or, create a shebang line (#!/usr/bin/python3) at the start of your file, and then set is as executable and run it directly. 
-
-Once it has run successfully you should see a bunch of files with .strm extension on disk.  Proceed to uncommend your TV vod urls in the text file and run the script again to add more shows to your library.  Use caution, when I ran this against all VOD items at once it took over 8 hours for jellyfin to add the content to my library and scrape the metadata. As of 5-18-23, Apollo is up to 27 M3u URLs for TV Shows but their documentation says 14 :)
+Schedule it (cron, launchd, systemd timer) as often as you like — runs are
+idempotent and a failed playlist just defers cleanup to the next healthy run.
