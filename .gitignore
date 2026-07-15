@@ -9,3 +9,4 @@ Movies/
 .venv/
 tmp/
 __pycache__/
+library/
