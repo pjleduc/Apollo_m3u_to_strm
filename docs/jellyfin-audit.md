@@ -61,12 +61,41 @@ JellySTRMprobe exists to pre-probe). Playback ffprobes the target URL on
 demand, so dead Apollo URLs surface as playback failures, not scan errors.
 No script change fixes this; it's inherent to .strm.
 
+## 8. Deployment quirks around large .strm libraries (found 2026-07-15, round 2)
+
+Not script defects, but operational traps the upstream README never mentions:
+
+- **Real-time monitoring**: Linux inotify defaults to 8192 watches; the full
+  Apollo tree is ~15k directories, and upstream's rewrite-everything runs
+  would flood the watcher besides. Disable per-library (jellyfin#9843,
+  troubleshooting docs).
+- **Trickplay / chapter images**: both decode the actual video. Against
+  remote IPTV URLs Jellyfin pulls entire streams from Apollo per item —
+  bandwidth abuse that can get the account flagged. Must be disabled for the
+  library (jellyfin-meta#33, forum "Trickplay vs Chapter Images").
+- **10.11 playback regressions**: fMP4-HLS remux path can time out in
+  browsers where 10.10.7 direct-played (jellyfin-web#7546, jellyfin#16612).
+  Client-side setting, but worth documenting for users of this tool.
+- **Header syntax in .strm**: `URL|User-Agent=...` isn't honored reliably
+  (jellyfin#9019) — the script must write bare URLs (it does).
+- **Episode-number parser traps**: absolute numbering like `One Piece 1001`
+  can misparse (episode 100 → S1E00 historically, jellyfin#1180); multi-episode
+  ranges `S01E01-E02` are supported and collapse to one entry. Entries without
+  SxxEyy can only fall back to the show root.
+- **Migration caveat**: switching an existing deployed library from the flat
+  layout to Season folders changes every path — Jellyfin treats moved files
+  as new items, so watch state resets once. Do the migration before first
+  real deployment, or accept the one-time reset.
+
 ## Status in this fork
 
 Items 2–5 were fixed on `main` in the 2026-07-15 rewrite (playlist-driven
 deletion, strm-only cleanup, write-on-change, global year collapse, collision
-detection). This branch (`jellyfin-compat`) is for item 1 (Season folders) and
-item 6 (version labels on collisions).
+detection). This branch (`jellyfin-compat`) fixes item 1 (Season NN folders
+parsed from SxxEyy, specials → Season 00, root fallback otherwise) and item 6
+(collisions become `Name - Version N.strm` alternate editions), and documents
+item 8's operational settings in the README.
 
-Sources: jellyfin.org docs (shows/movies naming), jellyfin#15518, #16048,
-#16149, #16549, JellySTRMprobe README, State of the Fin 2026-05-24.
+Sources: jellyfin.org docs (shows/movies naming, troubleshooting), jellyfin
+issues #1180, #9019, #9843, #15518, #16048, #16149, #16549, jellyfin-web
+#7546, jellyfin-meta#33, JellySTRMprobe README, State of the Fin 2026-05-24.

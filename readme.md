@@ -51,12 +51,34 @@ control (this repo's `.gitignore` already excludes them) and off shared drives.
 python3 getstreams.py [--root /path/to/library] [--no-delete]
 ```
 
-Output layout:
+Output layout (matches Jellyfin's documented structure):
 
 ```
-TV/<show>/<episode>.strm
-Movies/<title>/<title>.strm
+TV/<show>/Season NN/<episode>.strm    # Season parsed from SxxEyy; specials -> Season 00
+Movies/<title>/<title>.strm           # duplicate titles -> "<title> - Version N.strm"
 ```
+
+Episodes without an SxxEyy marker fall back to the show root (Jellyfin
+documents that layout as unsupported, so expect weaker matching for those).
+
+## Recommended Jellyfin library settings
+
+For a library of 100k+ remote `.strm` stubs (tested against Jellyfin 10.11):
+
+- **Disable real-time monitoring** on the library. Linux inotify defaults to
+  8192 watches; a full Apollo tree has ~15k+ directories and every sync run
+  would flood the watcher. Rely on a scheduled or post-sync triggered scan.
+- **Disable trickplay and chapter-image extraction** for the library. Both
+  download/decode the actual video; against remote IPTV URLs that means
+  pulling entire streams from the provider for every item.
+- Jellyfin never probes `.strm` files during scans, so items show no
+  codec/resolution/duration until first playback. That is normal; the
+  JellySTRMprobe community plugin can pre-probe if it bothers you.
+- On 10.11.x, if browser playback of these streams stalls or times out, turn
+  off "Prefer fMP4-HLS Media Container" in the client playback settings — a
+  known 10.11 regression path for HLS remuxing.
+- Don't append `|User-Agent=...` header syntax to URLs inside `.strm` files;
+  Jellyfin's ffmpeg invocation doesn't honor it reliably.
 
 Start with the movies URL and one TV URL, let your media server finish
 scanning, then uncomment a few more TV URLs per run. Apollo's full VOD catalog

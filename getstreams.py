@@ -5,8 +5,10 @@ Reads playlist URLs from tv_vod_urls.txt and movie_vod_urls.txt (one per line,
 lines starting with # ignored) and mirrors their contents into TV/ and Movies/
 as .strm files:
 
-    TV/<category>/<name>.strm
-    Movies/<name>/<name>.strm
+    TV/<category>/Season NN/<name>.strm   (Season parsed from SxxEyy in the name;
+                                           entries without SxxEyy land in the show root)
+    Movies/<name>/<name>.strm             (collisions become "<name> - Version N.strm",
+                                           which Jellyfin groups as alternate editions)
 
 Sync behavior:
   - .strm files are only rewritten when their stream URL changed.
@@ -49,6 +51,21 @@ def redact(url):
 def collapse_duplicate_years(name):
     """'Show (2020) (2020)' -> 'Show (2020)'."""
     return re.sub(r"(\(\d{4}\))(\s+\1)+", r"\1", name)
+
+
+EPISODE_RE = re.compile(r"\bS(\d{1,2})\s*E\d{1,3}", re.IGNORECASE)
+
+
+def season_folder(name):
+    """'Show S01E03' -> 'Season 01'; None when no SxxEyy marker is present.
+
+    Jellyfin requires episodes inside 'Season NN' folders (episodes in the
+    show root are documented as unsupported); specials map to Season 00.
+    """
+    match = EPISODE_RE.search(name)
+    if not match:
+        return None
+    return f"Season {int(match.group(1)):02d}"
 
 
 def read_url_file(path):
@@ -115,6 +132,9 @@ def strm_path(dest, item, movie_layout):
         return dest / name / f"{name}.strm"
     category = item.get("category") or "Uncategorized"
     category = sanitize_filename(collapse_duplicate_years(category)) or "Uncategorized"
+    season = season_folder(name)
+    if season:
+        return dest / category / season / f"{name}.strm"
     return dest / category / f"{name}.strm"
 
 
@@ -127,7 +147,7 @@ def sync_section(label, url_file, dest, movie_layout, allow_delete):
 
     complete = True
     expected = {}  # resolved Path -> stream url
-    written = skipped = collisions = 0
+    written = skipped = collisions = versions = 0
 
     for url in urls:
         streams = fetch_playlist(url, dest)
@@ -140,11 +160,27 @@ def sync_section(label, url_file, dest, movie_layout, allow_delete):
             if target is None:
                 continue
             target = target.resolve()
-            if target in expected:
-                if expected[target] != item["url"]:
+            if target not in expected:
+                expected[target] = item["url"]
+                continue
+            if expected[target] == item["url"]:
+                continue  # exact duplicate entry
+            if movie_layout:
+                # different URL for the same title: expose it as an alternate
+                # edition ("Name - Version N.strm"), which Jellyfin groups
+                # under one movie instead of silently dropping the variant
+                for n in range(2, 6):
+                    alt = target.parent / f"{target.stem} - Version {n}.strm"
+                    if alt not in expected:
+                        expected[alt] = item["url"]
+                        versions += 1
+                        break
+                    if expected[alt] == item["url"]:
+                        break
+                else:
                     collisions += 1
-                continue  # first entry wins
-            expected[target] = item["url"]
+            else:
+                collisions += 1  # first entry wins for episodes
 
     for target, stream_url in expected.items():
         if target.exists() and target.read_text() == stream_url:
@@ -154,6 +190,8 @@ def sync_section(label, url_file, dest, movie_layout, allow_delete):
         target.write_text(stream_url)
         written += 1
 
+    if versions:
+        log.info("%s: %d alternate versions written", label, versions)
     if collisions:
         log.warning("%s: %d name collisions (kept first occurrence)", label, collisions)
     log.info("%s: %d written, %d unchanged", label, written, skipped)
