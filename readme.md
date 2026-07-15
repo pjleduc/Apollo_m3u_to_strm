@@ -61,6 +61,36 @@ Movies/<title>/<title>.strm           # duplicate titles -> "<title> - Version N
 Episodes without an SxxEyy marker fall back to the show root (Jellyfin
 documents that layout as unsupported, so expect weaker matching for those).
 
+## Playback resolver (required for Apollo)
+
+Apollo's `tvnow.best` is Cloudflare-fronted and blocks Jellyfin's ffmpeg by
+**TLS fingerprint** — playback fails with "fatal player error" / ffmpeg
+"Connection reset by peer", even though metadata scraping (done in Python)
+works fine. It's not a User-Agent issue; curl and ffmpeg are blocked with a
+browser UA too, while python-requests is allowed. The upstream stream URLs
+also 301-redirect to a CDN with short-lived signed tokens, so they can't be
+baked into static files.
+
+`resolver.py` is a tiny local service that fixes this: it resolves the signed
+URL per playback (via requests) and 302-redirects ffmpeg to the CDN host,
+which ffmpeg reaches without issue. Run the sync with `--resolver-base` so the
+`.strm` files point at it (this also keeps your credentials out of the library
+files — they live only in the resolver's environment):
+
+```
+# start the resolver (foreground; see LaunchAgent below for always-on)
+APOLLO_USER=you APOLLO_PASS=secret .venv/bin/python resolver.py
+
+# sync with URL rewriting
+python3 getstreams.py --root /library --resolver-base http://127.0.0.1:8770/s
+```
+
+`.strm` files then contain `http://127.0.0.1:8770/s/movie/<id>` or
+`.../s/tvshow/<id>/<season>/<episode>` instead of the credentialed Apollo URL.
+Because the library depends on the resolver running, this setup is for a
+Jellyfin server on the same host (local or tunneled — the resolver binds
+127.0.0.1 either way).
+
 ## Recommended Jellyfin library settings
 
 For a library of 100k+ remote `.strm` stubs (tested against Jellyfin 10.11):

@@ -129,6 +129,28 @@ def valid_stream_url(url):
     return parts.scheme in ("http", "https") and bool(parts.hostname)
 
 
+STREAM_MARKER = "/api/stream/"
+
+
+def rewrite_url(url, resolver_base):
+    """Rewrite an Apollo stream URL to the local resolver, dropping credentials.
+
+    https://tvnow.best/api/stream/<user>/<pass>/<rest>  ->  <resolver_base>/<rest>
+
+    The resolver reattaches the credentials and follows Apollo's signed
+    redirect at playback time (see resolver.py). URLs that don't match the
+    Apollo stream pattern are returned unchanged.
+    """
+    if not resolver_base or STREAM_MARKER not in url:
+        return url
+    after = url.split(STREAM_MARKER, 1)[1]
+    parts = after.split("/")
+    if len(parts) < 3:
+        return url  # missing user/pass/rest
+    rest = "/".join(parts[2:])
+    return f"{resolver_base.rstrip('/')}/{rest}"
+
+
 def strm_path(dest, item, movie_layout):
     """Target .strm path for a stream dict, or None if it can't be built."""
     name = item.get("name")
@@ -156,7 +178,7 @@ def strm_path(dest, item, movie_layout):
     return dest / category / f"{name}.strm"
 
 
-def sync_section(label, url_file, dest, movie_layout, allow_delete):
+def sync_section(label, url_file, dest, movie_layout, allow_delete, resolver_base=None):
     """Mirror the playlists in url_file into dest. Returns True on full success."""
     urls = read_url_file(url_file)
     if not urls:
@@ -178,11 +200,12 @@ def sync_section(label, url_file, dest, movie_layout, allow_delete):
             if target is None:
                 unusable += 1
                 continue
+            stream_url = rewrite_url(item["url"], resolver_base)
             target = target.resolve()
             if target not in expected:
-                expected[target] = item["url"]
+                expected[target] = stream_url
                 continue
-            if expected[target] == item["url"]:
+            if expected[target] == stream_url:
                 continue  # exact duplicate entry
             if movie_layout:
                 # different URL for the same title: expose it as an alternate
@@ -191,10 +214,10 @@ def sync_section(label, url_file, dest, movie_layout, allow_delete):
                 for n in range(2, 6):
                     alt = target.parent / f"{target.stem} - Version {n}.strm"
                     if alt not in expected:
-                        expected[alt] = item["url"]
+                        expected[alt] = stream_url
                         versions += 1
                         break
-                    if expected[alt] == item["url"]:
+                    if expected[alt] == stream_url:
                         break
                 else:
                     collisions += 1
@@ -247,6 +270,16 @@ def main():
         action="store_true",
         help="never delete stale .strm files, only write/update",
     )
+    argp.add_argument(
+        "--resolver-base",
+        default=None,
+        help=(
+            "rewrite stream URLs through a local resolver, e.g. "
+            "http://127.0.0.1:8770/s . Required for Apollo, whose Cloudflare "
+            "front blocks ffmpeg by TLS fingerprint (see resolver.py). Also "
+            "keeps credentials out of the .strm files."
+        ),
+    )
     args = argp.parse_args()
     logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 
@@ -265,7 +298,10 @@ def main():
             log.error("%s: folder %s not found", label, dest)
             ok = False
             continue
-        ok = sync_section(label, url_file, dest, movie_layout, not args.no_delete) and ok
+        ok = sync_section(
+            label, url_file, dest, movie_layout,
+            not args.no_delete, args.resolver_base,
+        ) and ok
 
     sys.exit(0 if ok else 1)
 
